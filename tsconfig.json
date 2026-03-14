@@ -1,0 +1,3 @@
+{
+  "extends": "@next-js-and-electron/config/tsconfig.base.json"
+}

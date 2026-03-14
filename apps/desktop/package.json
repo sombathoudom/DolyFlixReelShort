@@ -1,23 +1,24 @@
 {
-  "name": "desktop",
-  "private": true,
-  "type": "module",
-  "scripts": {
-    "start": "bun run --filter web build && electrobun dev",
-    "dev": "electrobun dev --watch",
-    "dev:hmr": "concurrently \"bun run hmr\" \"bun run start\"",
-    "hmr": "bun run --filter web dev",
-    "build": "bun run --filter web build && electrobun build",
-    "build:stable": "bun run --filter web build && electrobun build --env=stable",
-    "build:canary": "bun run --filter web build && electrobun build --env=canary",
-    "check-types": "tsc --noEmit"
-  },
-  "dependencies": {
-    "electrobun": "^1.15.1"
-  },
-  "devDependencies": {
-    "@types/bun": "^1.3.4",
-    "concurrently": "^9.1.0",
-    "typescript": "^5"
-  }
+	"name": "desktop",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"start": "bun run --filter web build && electrobun dev",
+		"dev": "electrobun dev --watch",
+		"dev:hmr": "bunx concurrently \"bun run hmr\" \"bun run start\"",
+		"hmr": "bun run --filter web dev",
+		"build": "bun run --filter web build && electrobun build",
+		"build:stable": "bun run --filter web build && electrobun build --env=stable",
+		"build:canary": "bun run --filter web build && electrobun build --env=canary",
+		"check-types": "tsc --noEmit"
+	},
+	"dependencies": {
+		"electrobun": "^1.15.1"
+	},
+	"devDependencies": {
+		"@types/bun": "^1.3.4",
+		"@types/three": "^0.183.1",
+		"concurrently": "^9.1.0",
+		"typescript": "^5"
+	}
 }

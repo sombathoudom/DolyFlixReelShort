@@ -1,40 +1,38 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Albert_Sans, Cormorant_Garamond } from "next/font/google";
 
 import "../index.css";
-import Header from "@/components/header";
 import Providers from "@/components/providers";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
+const albertSans = Albert_Sans({
+	variable: "--font-reel-sans",
+	subsets: ["latin"],
 });
 
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
+const cormorant = Cormorant_Garamond({
+	weight: ["500", "600"],
+	variable: "--font-reel-display",
+	subsets: ["latin"],
 });
 
 export const metadata: Metadata = {
-  title: "next-js-and-electron",
-  description: "next-js-and-electron",
+	title: "ReelShort",
+	description:
+		"Desktop-first movie browser, player, and downloader for ReelShort fans.",
 };
 
 export default function RootLayout({
-  children,
+	children,
 }: Readonly<{
-  children: React.ReactNode;
+	children: React.ReactNode;
 }>) {
-  return (
-    <html lang="en" suppressHydrationWarning>
-      <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
-        <Providers>
-          <div className="grid grid-rows-[auto_1fr] h-svh">
-            <Header />
-            {children}
-          </div>
-        </Providers>
-      </body>
-    </html>
-  );
+	return (
+		<html lang="en" suppressHydrationWarning>
+			<body
+				className={`${albertSans.variable} ${cormorant.variable} antialiased`}
+			>
+				<Providers>{children}</Providers>
+			</body>
+		</html>
+	);
 }

@@ -126,14 +126,15 @@ export function ReelShortPlayer({
 		}
 
 		const handleLoadedMetadata = () => {
+			const resumePosition = initialPosition > 5 ? initialPosition : 0;
 			setDuration(video.duration || 0);
-			setCurrentTime(initialPosition > 5 ? initialPosition : 0);
+			setCurrentTime(resumePosition);
 			setVideoSize({
 				width: video.videoWidth || 0,
 				height: video.videoHeight || 0,
 			});
-			if (initialPosition > 5) {
-				video.currentTime = initialPosition;
+			if (resumePosition > 0) {
+				video.currentTime = resumePosition;
 			}
 			setIsReady(true);
 			attemptAutoplay();
@@ -238,6 +239,26 @@ export function ReelShortPlayer({
 		void frameRef.current?.requestFullscreen();
 	};
 
+	useEffect(() => {
+		const handleKeydown = (event: KeyboardEvent) => {
+			const target = event.target as HTMLElement | null;
+			if (
+				event.code !== "Space" ||
+				target?.tagName === "INPUT" ||
+				target?.tagName === "TEXTAREA" ||
+				target?.isContentEditable
+			) {
+				return;
+			}
+
+			event.preventDefault();
+			togglePlayback();
+		};
+
+		window.addEventListener("keydown", handleKeydown);
+		return () => window.removeEventListener("keydown", handleKeydown);
+	}, []);
+
 	return (
 		<div className="fixed inset-0 z-50 bg-black/90 px-4 py-4 backdrop-blur-xl sm:px-8">
 			<div
@@ -307,8 +328,8 @@ export function ReelShortPlayer({
 							) : null}
 						</div>
 
-						<div className="border-white/10 border-t bg-[#0b0f16] px-4 py-4 sm:px-6">
-							<div className="mx-auto max-w-4xl space-y-3 rounded-[28px] border border-white/10 bg-white/5 p-4 shadow-[0_20px_60px_rgba(0,0,0,0.35)] backdrop-blur-md">
+						<div className="border-white/10 border-t bg-[#0b0f16] px-0 py-0">
+							<div className="w-full space-y-3 border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,0.06),rgba(255,255,255,0.03))] px-4 py-4 shadow-[0_20px_60px_rgba(0,0,0,0.2)] backdrop-blur-md sm:px-6">
 								<input
 									type="range"
 									min={0}
@@ -319,7 +340,7 @@ export function ReelShortPlayer({
 								/>
 
 								<div className="flex flex-wrap items-center justify-between gap-3 text-white">
-									<div className="flex items-center gap-2">
+									<div className="flex min-w-0 flex-1 items-center gap-2">
 										<Button
 											variant="ghost"
 											size="icon"
@@ -346,12 +367,12 @@ export function ReelShortPlayer({
 										>
 											<SkipForward />
 										</Button>
-										<div className="ml-2 text-white/65 text-xs">
+										<div className="ml-2 min-w-0 text-white/65 text-xs">
 											{formatDuration(currentTime)} / {formatDuration(duration)}
 										</div>
 									</div>
 
-									<div className="flex items-center gap-3">
+									<div className="flex flex-1 items-center justify-end gap-3">
 										<div className="hidden items-center gap-2 sm:flex">
 											<button
 												type="button"

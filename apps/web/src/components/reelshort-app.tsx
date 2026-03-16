@@ -2,6 +2,7 @@
 
 import { Button } from "@next-js-and-electron/ui/components/button";
 import { Card, CardContent } from "@next-js-and-electron/ui/components/card";
+import { cn } from "@next-js-and-electron/ui/lib/utils";
 import {
 	ArrowRight,
 	Bell,
@@ -51,6 +52,7 @@ type View = "discover" | "downloads" | "settings";
 
 const SETTINGS_STORAGE_KEY = "reelshort-settings";
 const WATCH_PROGRESS_STORAGE_KEY = "reelshort-progress";
+const DEFAULT_FEED_QUERY = "love";
 const accentPresets = ["#ff6b4a", "#ff3d6e", "#f59e0b", "#34d399", "#38bdf8"];
 
 async function requestJson<T>(input: RequestInfo, init?: RequestInit) {
@@ -93,7 +95,7 @@ function loadWatchProgress() {
 }
 
 export function ReelShortApp() {
-	const { setTheme } = useTheme();
+	const { resolvedTheme, setTheme } = useTheme();
 	const [view, setView] = useState<View>("discover");
 	const [query, setQuery] = useState("");
 	const [results, setResults] = useState<ReelShortSearchResult[]>([]);
@@ -113,6 +115,40 @@ export function ReelShortApp() {
 		Record<string, WatchProgress>
 	>({});
 	const [loadingEpisodeId, setLoadingEpisodeId] = useState<string | null>(null);
+	const [playerInitialPosition, setPlayerInitialPosition] = useState(0);
+	const [isBootstrapping, setIsBootstrapping] = useState(true);
+	const [isMounted, setIsMounted] = useState(false);
+	const isLightTheme = isMounted && resolvedTheme === "light";
+	const shellPanelClass = isLightTheme
+		? "border-slate-300 bg-[#17181e] text-white"
+		: "border-white/8 bg-[#17181e] text-white";
+	const sectionPanelClass = "bg-[#111216] text-white";
+	const subtleTextClass = isLightTheme ? "text-slate-500" : "text-white/35";
+	const secondaryTextClass = isLightTheme ? "text-slate-600" : "text-white/58";
+	const pillClass = isLightTheme
+		? "border-slate-200 bg-white text-slate-700"
+		: "border-white/10 bg-white/[0.03] text-white/75";
+
+	const loadDefaultFeed = async () => {
+		const response = await requestJson<{ results: ReelShortSearchResult[] }>(
+			"/api/reelshort/search",
+			{
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					query: DEFAULT_FEED_QUERY,
+					page: 1,
+					pageSize: 10,
+				}),
+			},
+		);
+
+		setResults(response.results);
+	};
+
+	useEffect(() => {
+		setIsMounted(true);
+	}, []);
 
 	useEffect(() => {
 		const storedSettings = loadStoredSettings();
@@ -140,6 +176,33 @@ export function ReelShortApp() {
 			.catch(() => {
 				toast.error("Unable to load the default save directory.");
 			});
+	}, []);
+
+	useEffect(() => {
+		let cancelled = false;
+
+		const bootstrapDefaultFeed = async () => {
+			try {
+				await loadDefaultFeed();
+				if (!cancelled) {
+					setResults((current) => current);
+				}
+			} catch {
+				if (!cancelled) {
+					setResults([]);
+				}
+			} finally {
+				if (!cancelled) {
+					setIsBootstrapping(false);
+				}
+			}
+		};
+
+		void bootstrapDefaultFeed();
+
+		return () => {
+			cancelled = true;
+		};
 	}, []);
 
 	useEffect(() => {
@@ -248,6 +311,16 @@ export function ReelShortApp() {
 		? (watchProgress[`${activePlayback.bookId}:${activePlayback.chapterId}`]
 				?.positionSeconds ?? 0)
 		: 0;
+	const activeDuration = activePlayback
+		? (watchProgress[`${activePlayback.bookId}:${activePlayback.chapterId}`]
+				?.durationSeconds ?? 0)
+		: 0;
+
+	const normalizedActiveProgress =
+		activeProgress > 5 &&
+		(!activeDuration || activeProgress < activeDuration - 5)
+			? activeProgress
+			: 0;
 
 	const handleSettingsChange = <T extends keyof ReelShortSettings>(
 		key: T,
@@ -355,7 +428,10 @@ export function ReelShortApp() {
 		}
 	};
 
-	const openEpisode = async (episode: ReelShortEpisode) => {
+	const openEpisode = async (
+		episode: ReelShortEpisode,
+		options?: { resume?: boolean },
+	) => {
 		setLoadingEpisodeId(episode.chapterId);
 
 		try {
@@ -372,6 +448,12 @@ export function ReelShortApp() {
 			);
 
 			setActivePlayback(response.playback);
+			setPlayerInitialPosition(
+				options?.resume
+					? (watchProgress[`${episode.bookId}:${episode.chapterId}`]
+							?.positionSeconds ?? 0)
+					: 0,
+			);
 			setIsPlayerOpen(true);
 		} catch (error) {
 			toast.error(
@@ -458,7 +540,7 @@ export function ReelShortApp() {
 	const handlePlayerEnd = () => {
 		markEpisodeComplete(activeEpisode);
 		if (nextEpisode) {
-			void openEpisode(nextEpisode);
+			void openEpisode(nextEpisode, { resume: false });
 			return;
 		}
 
@@ -476,13 +558,40 @@ export function ReelShortApp() {
 
 	const handleHeroWatch = async () => {
 		if (selectedMovie?.episodes[0]) {
-			await openEpisode(selectedMovie.episodes[0]);
+			await openEpisode(selectedMovie.episodes[0], { resume: false });
 			return;
 		}
 
 		if (results[0]) {
 			await fetchMovie(results[0].bookId, results[0].chapterId);
 		}
+	};
+
+	const handleResumePlayback = () => {
+		setPlayerInitialPosition(normalizedActiveProgress || 0);
+		setIsPlayerOpen(true);
+	};
+
+	const handleBack = () => {
+		if (selectedMovie) {
+			setSelectedMovie(null);
+			setActivePlayback(null);
+			setSelectedEpisodeIds([]);
+			setView("discover");
+			return;
+		}
+
+		if (view !== "discover") {
+			setView("discover");
+			return;
+		}
+
+		setQuery("");
+		setResults([]);
+		setIsBootstrapping(true);
+		void loadDefaultFeed()
+			.catch(() => setResults([]))
+			.finally(() => setIsBootstrapping(false));
 	};
 
 	const sidebarItems = [
@@ -520,28 +629,56 @@ export function ReelShortApp() {
 
 	return (
 		<div
-			className="min-h-svh bg-[radial-gradient(circle_at_top_left,rgba(255,255,255,0.24),transparent_18%),linear-gradient(180deg,#d8dee7_0%,#cbd4de_14%,#0b0b10_14%,#09090d_100%)] px-3 py-3 text-foreground sm:px-6 sm:py-6"
+			className={
+				isLightTheme
+					? "min-h-svh bg-[radial-gradient(circle_at_top_left,rgba(255,255,255,0.78),transparent_18%),linear-gradient(180deg,#eef2f7_0%,#dde5ef_14%,#f8fafc_14%,#eef3f8_100%)] px-3 py-3 text-slate-900 sm:px-6 sm:py-6"
+					: "min-h-svh bg-[radial-gradient(circle_at_top_left,rgba(255,255,255,0.24),transparent_18%),linear-gradient(180deg,#d8dee7_0%,#cbd4de_14%,#0b0b10_14%,#09090d_100%)] px-3 py-3 text-foreground sm:px-6 sm:py-6"
+			}
 			style={{
 				["--reel-accent" as string]: settings.accentColor,
 				["--reel-accent-soft" as string]: `${settings.accentColor}22`,
 			}}
 		>
-			<div className="mx-auto grid min-h-[calc(100svh-1.5rem)] max-w-[1260px] gap-px overflow-hidden rounded-[34px] border border-white/10 bg-white/10 shadow-[0_40px_120px_rgba(0,0,0,0.28)] lg:grid-cols-[220px_minmax(0,1fr)]">
-				<aside className="flex flex-col bg-[#101014] px-4 py-5 text-white sm:px-5">
-					<div className="flex items-center gap-3 border-white/6 border-b pb-6">
+			<div className="mx-auto grid min-h-[calc(100svh-1.5rem)] max-w-[1260px] animate-fade-up gap-px overflow-hidden rounded-[34px] border border-white/10 bg-white/10 shadow-[0_40px_120px_rgba(0,0,0,0.28)] lg:grid-cols-[220px_minmax(0,1fr)]">
+				<aside
+					className={
+						isLightTheme
+							? "flex flex-col bg-[#f7f9fc] px-4 py-5 text-slate-900 sm:px-5"
+							: "flex flex-col bg-[#101014] px-4 py-5 text-white sm:px-5"
+					}
+				>
+					<div
+						className={
+							isLightTheme
+								? "flex items-center gap-3 border-slate-200 border-b pb-6"
+								: "flex items-center gap-3 border-white/6 border-b pb-6"
+						}
+					>
 						<div className="flex size-9 items-center justify-center rounded-full bg-[color:var(--reel-accent)] font-semibold text-white text-xs">
 							R
 						</div>
 						<div>
 							<p className="font-semibold text-sm">ReelShort</p>
-							<p className="text-[11px] text-white/40 uppercase tracking-[0.28em]">
+							<p
+								className={
+									isLightTheme
+										? "text-[11px] text-slate-500 uppercase tracking-[0.28em]"
+										: "text-[11px] text-white/40 uppercase tracking-[0.28em]"
+								}
+							>
 								Movie deck
 							</p>
 						</div>
 					</div>
 
 					<div className="pt-6">
-						<p className="text-[11px] text-white/36 uppercase tracking-[0.3em]">
+						<p
+							className={
+								isLightTheme
+									? "text-[11px] text-slate-500 uppercase tracking-[0.3em]"
+									: "text-[11px] text-white/36 uppercase tracking-[0.3em]"
+							}
+						>
 							News Feed
 						</p>
 						<nav className="mt-4 grid gap-2">
@@ -553,7 +690,7 @@ export function ReelShortApp() {
 										key={item.id}
 										type="button"
 										onClick={() => setView(item.id as View)}
-										className={`flex items-center gap-3 rounded-[18px] px-4 py-3 text-sm transition ${active ? "bg-[color:var(--reel-accent)] text-white" : "text-white/72 hover:bg-white/[0.04] hover:text-white"}`}
+										className={`flex items-center gap-3 rounded-[18px] px-4 py-3 text-sm transition ${active ? "bg-[color:var(--reel-accent)] text-white" : isLightTheme ? "text-slate-700 hover:bg-slate-100 hover:text-slate-900" : "text-white/72 hover:bg-white/[0.04] hover:text-white"}`}
 									>
 										<Icon className="size-4" />
 										{item.label}
@@ -563,8 +700,20 @@ export function ReelShortApp() {
 						</nav>
 					</div>
 
-					<div className="mt-8 rounded-[24px] border border-white/8 bg-white/[0.03] p-4">
-						<p className="text-[11px] text-white/36 uppercase tracking-[0.3em]">
+					<div
+						className={
+							isLightTheme
+								? "mt-8 rounded-[24px] border border-slate-200 bg-white p-4"
+								: "mt-8 rounded-[24px] border border-white/8 bg-white/[0.03] p-4"
+						}
+					>
+						<p
+							className={
+								isLightTheme
+									? "text-[11px] text-slate-500 uppercase tracking-[0.3em]"
+									: "text-[11px] text-white/36 uppercase tracking-[0.3em]"
+							}
+						>
 							Accent
 						</p>
 						<div className="mt-4 flex flex-wrap gap-2">
@@ -580,11 +729,29 @@ export function ReelShortApp() {
 						</div>
 					</div>
 
-					<div className="mt-auto rounded-[24px] border border-white/8 bg-white/[0.03] p-4">
-						<p className="text-[11px] text-white/36 uppercase tracking-[0.3em]">
+					<div
+						className={
+							isLightTheme
+								? "mt-auto rounded-[24px] border border-slate-200 bg-white p-4"
+								: "mt-auto rounded-[24px] border border-white/8 bg-white/[0.03] p-4"
+						}
+					>
+						<p
+							className={
+								isLightTheme
+									? "text-[11px] text-slate-500 uppercase tracking-[0.3em]"
+									: "text-[11px] text-white/36 uppercase tracking-[0.3em]"
+							}
+						>
 							Session
 						</p>
-						<div className="mt-4 space-y-3 text-sm text-white/70">
+						<div
+							className={
+								isLightTheme
+									? "mt-4 space-y-3 text-slate-600 text-sm"
+									: "mt-4 space-y-3 text-sm text-white/70"
+							}
+						>
 							<div className="flex items-center justify-between">
 								<span>Theme</span>
 								<span className="capitalize">{settings.theme}</span>
@@ -601,20 +768,49 @@ export function ReelShortApp() {
 					</div>
 				</aside>
 
-				<main className="grid min-h-0 bg-[#121216] text-white">
-					<header className="flex flex-wrap items-center justify-between gap-4 border-white/6 border-b px-5 py-5 sm:px-7">
+				<main
+					className={
+						isLightTheme
+							? "grid min-h-0 bg-[#fbfcfe] text-slate-900"
+							: "grid min-h-0 bg-[#121216] text-white"
+					}
+				>
+					<header
+						className={
+							isLightTheme
+								? "flex flex-wrap items-center justify-between gap-4 border-slate-200 border-b px-5 py-5 sm:px-7"
+								: "flex flex-wrap items-center justify-between gap-4 border-white/6 border-b px-5 py-5 sm:px-7"
+						}
+					>
 						<div className="flex items-center gap-3">
 							<button
 								type="button"
-								className="flex size-10 items-center justify-center rounded-[14px] border border-white/10 bg-white/[0.03] text-white/70"
+								onClick={handleBack}
+								className={
+									isLightTheme
+										? "flex size-10 items-center justify-center rounded-[14px] border border-slate-300 bg-white text-slate-700"
+										: "flex size-10 items-center justify-center rounded-[14px] border border-white/10 bg-white/[0.03] text-white/70"
+								}
 							>
 								<ArrowRight className="size-4 rotate-180" />
 							</button>
 							<div>
-								<p className="text-[11px] text-white/35 uppercase tracking-[0.32em]">
+								<p
+									className={
+										isLightTheme
+											? "text-[11px] text-slate-500 uppercase tracking-[0.32em]"
+											: "text-[11px] text-white/35 uppercase tracking-[0.32em]"
+									}
+								>
 									Discover
 								</p>
-								<p className="mt-1 font-medium text-sm text-white/78">
+								<p
+									className={
+										isLightTheme
+											? "mt-1 font-medium text-slate-700 text-sm"
+											: "mt-1 font-medium text-sm text-white/78"
+									}
+								>
 									A streaming layout inspired by your reference board
 								</p>
 							</div>
@@ -623,14 +819,28 @@ export function ReelShortApp() {
 						<div className="flex flex-wrap items-center gap-3">
 							<form
 								onSubmit={handleSearch}
-								className="flex h-12 min-w-[260px] items-center gap-3 rounded-full border border-white/10 bg-white/[0.03] px-4 sm:min-w-[360px]"
+								className={
+									isLightTheme
+										? "flex h-12 min-w-[260px] items-center gap-3 rounded-full border border-slate-300 bg-white px-4 sm:min-w-[360px]"
+										: "flex h-12 min-w-[260px] items-center gap-3 rounded-full border border-white/10 bg-white/[0.03] px-4 sm:min-w-[360px]"
+								}
 							>
-								<Search className="size-4 text-white/40" />
+								<Search
+									className={
+										isLightTheme
+											? "size-4 text-slate-400"
+											: "size-4 text-white/40"
+									}
+								/>
 								<input
 									value={query}
 									onChange={(event) => setQuery(event.target.value)}
 									placeholder="Search everything or paste a ReelShort URL"
-									className="w-full bg-transparent text-sm text-white placeholder:text-white/30 focus:outline-none"
+									className={
+										isLightTheme
+											? "w-full bg-transparent text-slate-900 text-sm placeholder:text-slate-400 focus:outline-none"
+											: "w-full bg-transparent text-sm text-white placeholder:text-white/30 focus:outline-none"
+									}
 								/>
 								<button
 									type="submit"
@@ -641,7 +851,11 @@ export function ReelShortApp() {
 							</form>
 							<button
 								type="button"
-								className="flex size-10 items-center justify-center rounded-full border border-white/10 bg-white/[0.03] text-white/70"
+								className={
+									isLightTheme
+										? "flex size-10 items-center justify-center rounded-full border border-slate-300 bg-white text-slate-700"
+										: "flex size-10 items-center justify-center rounded-full border border-white/10 bg-white/[0.03] text-white/70"
+								}
 							>
 								<Bell className="size-4" />
 							</button>
@@ -653,7 +867,14 @@ export function ReelShortApp() {
 
 					<section className="grid min-h-0 gap-4 p-4 sm:p-5 xl:grid-cols-[minmax(0,1fr)_290px]">
 						<div className="grid gap-4">
-							<section className="overflow-hidden rounded-[28px] bg-[#0f1016]">
+							<section
+								className={cn(
+									"animate-fade-up overflow-hidden rounded-[28px]",
+									isLightTheme
+										? "bg-white text-slate-900 shadow-[0_20px_40px_rgba(15,23,42,0.08)]"
+										: "bg-[#0f1016] text-white",
+								)}
+							>
 								<div className="grid min-h-[320px] lg:grid-cols-[0.92fr_1.08fr]">
 									<div className="flex flex-col justify-between px-6 py-6 sm:px-8">
 										<div>
@@ -663,11 +884,21 @@ export function ReelShortApp() {
 											<h2 className="mt-6 font-[family-name:var(--font-reel-display)] text-5xl leading-none sm:text-6xl">
 												{featuredMovie?.title || "ReelShort"}
 											</h2>
-											<p className="mt-4 line-clamp-3 max-w-md text-sm text-white/62 leading-7">
+											<p
+												className={cn(
+													"mt-4 line-clamp-3 max-w-md text-sm leading-7",
+													isLightTheme ? "text-slate-700" : "text-white/62",
+												)}
+											>
 												{featuredMovie?.description ||
 													"Search, watch, and manage serialized short dramas inside a cleaner desktop deck."}
 											</p>
-											<div className="mt-5 flex flex-wrap items-center gap-4 text-sm text-white/68">
+											<div
+												className={cn(
+													"mt-5 flex flex-wrap items-center gap-4 text-sm",
+													isLightTheme ? "text-slate-700" : "text-white/68",
+												)}
+											>
 												<span className="inline-flex items-center gap-2">
 													<Film className="size-4 text-[color:var(--reel-accent)]" />{" "}
 													{featuredCount
@@ -698,7 +929,12 @@ export function ReelShortApp() {
 										</div>
 									</div>
 
-									<div className="relative min-h-[260px] overflow-hidden border-white/6 border-t lg:border-t-0 lg:border-l">
+									<div
+										className={cn(
+											"relative min-h-[260px] overflow-hidden border-t lg:border-t-0 lg:border-l",
+											isLightTheme ? "border-slate-200" : "border-white/6",
+										)}
+									>
 										{featuredMovie ? (
 											<Image
 												src={featuredMovie.poster || featuredMovie.thumbnail}
@@ -710,14 +946,28 @@ export function ReelShortApp() {
 										) : (
 											<div className="h-full w-full bg-[radial-gradient(circle_at_35%_30%,rgba(255,255,255,0.22),transparent_18%),linear-gradient(135deg,#2a3650,#111318_70%)]" />
 										)}
-										<div className="absolute inset-0 bg-[linear-gradient(90deg,#0f1016_8%,rgba(15,16,22,0.45)_45%,rgba(15,16,22,0.06)_100%)]" />
+										<div
+											className={cn(
+												"absolute inset-0",
+												isLightTheme
+													? "bg-[linear-gradient(90deg,rgba(255,255,255,0.96)_8%,rgba(255,255,255,0.38)_45%,rgba(255,255,255,0.06)_100%)]"
+													: "bg-[linear-gradient(90deg,#0f1016_8%,rgba(15,16,22,0.45)_45%,rgba(15,16,22,0.06)_100%)]",
+											)}
+										/>
 										<div className="absolute inset-x-0 bottom-0 flex items-center gap-3 overflow-auto px-5 pb-5">
 											{featuredEpisodes.map((episode) => (
 												<button
 													key={episode.chapterId}
 													type="button"
-													onClick={() => void openEpisode(episode)}
-													className="min-w-32 rounded-[18px] border border-white/10 bg-black/45 px-4 py-3 text-left backdrop-blur transition hover:border-[color:var(--reel-accent)]/40"
+													onClick={() =>
+														void openEpisode(episode, { resume: false })
+													}
+													className={cn(
+														"min-w-32 rounded-[18px] px-4 py-3 text-left backdrop-blur transition hover:border-[color:var(--reel-accent)]/40",
+														isLightTheme
+															? "border border-white/80 bg-white/80 text-slate-900 shadow-sm"
+															: "border border-white/10 bg-black/45 text-white",
+													)}
 												>
 													<p className="text-[11px] text-white/38 uppercase tracking-[0.24em]">
 														Episode
@@ -733,8 +983,52 @@ export function ReelShortApp() {
 							</section>
 
 							{view === "discover" ? (
-								selectedMovie ? (
-									<section className="grid gap-4 rounded-[28px] bg-[#111216] p-4 sm:p-5">
+								isBootstrapping ? (
+									<section
+										className={cn(
+											"grid gap-4 rounded-[28px] p-4 sm:p-5",
+											sectionPanelClass,
+										)}
+									>
+										<div className="flex items-center justify-between gap-4">
+											<div className="space-y-3">
+												<div className="skeleton h-3 w-28 rounded-full" />
+												<div className="skeleton h-10 w-56 rounded-full" />
+											</div>
+											<div className="skeleton h-10 w-28 rounded-full" />
+										</div>
+										<div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+											{Array.from({ length: 8 }).map((_, index) => (
+												<div
+													key={`skeleton-${index}`}
+													className="rounded-[24px] border border-white/8 bg-[#17181e] p-4"
+												>
+													<div className="flex items-start justify-between gap-3">
+														<div className="w-full space-y-3">
+															<div className="skeleton h-3 w-20 rounded-full" />
+															<div className="skeleton h-7 w-28 rounded-full" />
+														</div>
+														<div className="skeleton size-5 rounded-md" />
+													</div>
+													<div className="mt-4 space-y-2">
+														<div className="skeleton h-3 w-full rounded-full" />
+														<div className="skeleton h-3 w-2/3 rounded-full" />
+													</div>
+													<div className="mt-4 flex gap-2">
+														<div className="skeleton h-10 flex-1 rounded-full" />
+														<div className="skeleton h-10 flex-1 rounded-full" />
+													</div>
+												</div>
+											))}
+										</div>
+									</section>
+								) : selectedMovie ? (
+									<section
+										className={cn(
+											"grid gap-4 rounded-[28px] p-4 sm:p-5",
+											sectionPanelClass,
+										)}
+									>
 										<div className="flex flex-wrap items-center justify-between gap-4">
 											<div>
 												<p className="text-[11px] text-white/35 uppercase tracking-[0.32em]">
@@ -762,14 +1056,34 @@ export function ReelShortApp() {
 												return (
 													<div
 														key={episode.chapterId}
-														className="rounded-[24px] border border-white/8 bg-[#17181e] p-4 transition hover:border-white/14 hover:bg-[#1b1c23]"
+														className={cn(
+															"rounded-[24px] border p-4 transition",
+															shellPanelClass,
+															isLightTheme
+																? "hover:border-slate-300 hover:bg-slate-50"
+																: "hover:border-white/14 hover:bg-[#1b1c23]",
+														)}
 													>
 														<div className="flex items-start justify-between gap-3">
 															<div>
-																<p className="text-[11px] text-white/35 uppercase tracking-[0.24em]">
+																<p
+																	className={cn(
+																		"text-[11px] uppercase tracking-[0.24em]",
+																		isLightTheme
+																			? "text-slate-500"
+																			: "text-white/35",
+																	)}
+																>
 																	Episode {episode.index}
 																</p>
-																<h4 className="mt-2 line-clamp-2 font-semibold text-white">
+																<h4
+																	className={cn(
+																		"mt-2 line-clamp-2 font-semibold",
+																		isLightTheme
+																			? "text-slate-900"
+																			: "text-white",
+																	)}
+																>
 																	{episode.title}
 																</h4>
 															</div>
@@ -793,7 +1107,14 @@ export function ReelShortApp() {
 																</span>
 															</label>
 														</div>
-														<p className="mt-3 text-white/45 text-xs">
+														<p
+															className={cn(
+																"mt-3 text-xs",
+																isLightTheme
+																	? "text-slate-600"
+																	: "text-white/45",
+															)}
+														>
 															{resume?.positionSeconds
 																? `Resume from ${Math.floor(resume.positionSeconds)}s`
 																: "Ready for playback and download"}
@@ -801,14 +1122,21 @@ export function ReelShortApp() {
 														<div className="mt-4 flex flex-col gap-2 sm:flex-row">
 															<Button
 																variant="outline"
-																className="w-full min-w-0 rounded-full border-white/10 bg-transparent px-3 text-white hover:bg-white/[0.05] sm:flex-1"
+																className={cn(
+																	"w-full min-w-0 rounded-full px-3 sm:flex-1",
+																	isLightTheme
+																		? "border-slate-300 bg-white text-slate-700 hover:bg-slate-100"
+																		: "border-white/10 bg-transparent text-white hover:bg-white/[0.05]",
+																)}
 																onClick={() => void queueEpisodes([episode])}
 															>
 																<Download /> Save
 															</Button>
 															<Button
 																className="w-full min-w-0 rounded-full bg-[color:var(--reel-accent)] px-3 text-white hover:bg-[color:var(--reel-accent)]/90 sm:flex-1"
-																onClick={() => void openEpisode(episode)}
+																onClick={() =>
+																	void openEpisode(episode, { resume: false })
+																}
 															>
 																{isLoadingEpisode ? (
 																	<LoaderCircle className="animate-spin" />
@@ -877,7 +1205,13 @@ export function ReelShortApp() {
 													onClick={() =>
 														void fetchMovie(result.bookId, result.chapterId)
 													}
-													className="overflow-hidden rounded-[24px] border border-white/8 bg-[#17181e] text-left transition hover:-translate-y-1 hover:border-white/16"
+													className={cn(
+														"overflow-hidden rounded-[24px] border text-left transition hover:-translate-y-1",
+														shellPanelClass,
+														isLightTheme
+															? "hover:border-slate-300"
+															: "hover:border-white/16",
+													)}
 												>
 													<div className="relative aspect-[4/5] overflow-hidden">
 														{result.poster || result.thumbnail ? (
@@ -939,7 +1273,12 @@ export function ReelShortApp() {
 							) : null}
 
 							{view === "downloads" ? (
-								<section className="grid gap-4 rounded-[28px] bg-[#111216] p-4 sm:p-5">
+								<section
+									className={cn(
+										"grid gap-4 rounded-[28px] p-4 sm:p-5",
+										sectionPanelClass,
+									)}
+								>
 									<div className="flex items-center justify-between gap-4">
 										<div>
 											<p className="text-[11px] text-white/35 uppercase tracking-[0.32em]">
@@ -1020,11 +1359,26 @@ export function ReelShortApp() {
 							) : null}
 
 							{view === "settings" ? (
-								<section className="grid gap-4 rounded-[28px] bg-[#111216] p-4 sm:p-5 lg:grid-cols-2">
-									<Card className="rounded-[24px] border border-white/8 bg-[#17181e] py-0 text-white shadow-none">
+								<section
+									className={cn(
+										"grid gap-4 rounded-[28px] p-4 sm:p-5 lg:grid-cols-2",
+										sectionPanelClass,
+									)}
+								>
+									<Card
+										className={cn(
+											"rounded-[24px] py-0 shadow-none",
+											shellPanelClass,
+										)}
+									>
 										<CardContent className="grid gap-5 p-5">
 											<div>
-												<p className="text-[11px] text-white/35 uppercase tracking-[0.3em]">
+												<p
+													className={cn(
+														"text-[11px] uppercase tracking-[0.3em]",
+														subtleTextClass,
+													)}
+												>
 													Theme
 												</p>
 												<h3 className="mt-2 font-[family-name:var(--font-reel-display)] text-3xl">
@@ -1049,7 +1403,7 @@ export function ReelShortApp() {
 																	option.value as ReelShortSettings["theme"],
 																)
 															}
-															className={`flex items-center gap-2 rounded-full px-4 py-2 text-sm transition ${active ? "bg-[color:var(--reel-accent)] text-white" : "bg-white/[0.03] text-white/70 hover:bg-white/[0.06]"}`}
+															className={`flex items-center gap-2 rounded-full px-4 py-2 text-sm transition ${active ? "bg-[color:var(--reel-accent)] text-white" : isLightTheme ? "bg-slate-100 text-slate-700 hover:bg-slate-200" : "bg-white/[0.03] text-white/70 hover:bg-white/[0.06]"}`}
 														>
 															<Icon className="size-4" />
 															{option.label}
@@ -1058,7 +1412,12 @@ export function ReelShortApp() {
 												})}
 											</div>
 											<div>
-												<p className="text-[11px] text-white/35 uppercase tracking-[0.3em]">
+												<p
+													className={cn(
+														"text-[11px] uppercase tracking-[0.3em]",
+														subtleTextClass,
+													)}
+												>
 													Accent color
 												</p>
 												<input
@@ -1069,23 +1428,40 @@ export function ReelShortApp() {
 															event.target.value || DEFAULT_ACCENT,
 														)
 													}
-													className="mt-3 h-12 w-full rounded-[18px] border border-white/10 bg-white/[0.03] px-4 text-sm text-white outline-none"
+													className={cn(
+														"mt-3 h-12 w-full rounded-[18px] border px-4 text-sm outline-none",
+														isLightTheme
+															? "border-slate-300 bg-white text-slate-900"
+															: "border-white/10 bg-white/[0.03] text-white",
+													)}
 												/>
 											</div>
 										</CardContent>
 									</Card>
 
-									<Card className="rounded-[24px] border border-white/8 bg-[#17181e] py-0 text-white shadow-none">
+									<Card
+										className={cn(
+											"rounded-[24px] py-0 shadow-none",
+											shellPanelClass,
+										)}
+									>
 										<CardContent className="grid gap-5 p-5">
 											<div>
-												<p className="text-[11px] text-white/35 uppercase tracking-[0.3em]">
+												<p
+													className={cn(
+														"text-[11px] uppercase tracking-[0.3em]",
+														subtleTextClass,
+													)}
+												>
 													Downloads
 												</p>
 												<h3 className="mt-2 font-[family-name:var(--font-reel-display)] text-3xl">
 													Storage
 												</h3>
 											</div>
-											<label className="grid gap-2 text-sm text-white/70">
+											<label
+												className={cn("grid gap-2 text-sm", secondaryTextClass)}
+											>
 												Save directory
 												<input
 													value={settings.saveDirectory}
@@ -1095,10 +1471,22 @@ export function ReelShortApp() {
 															event.target.value,
 														)
 													}
-													className="h-12 rounded-[18px] border border-white/10 bg-white/[0.03] px-4 text-white outline-none"
+													className={cn(
+														"h-12 rounded-[18px] border px-4 outline-none",
+														isLightTheme
+															? "border-slate-300 bg-white text-slate-900"
+															: "border-white/10 bg-white/[0.03] text-white",
+													)}
 												/>
 											</label>
-											<label className="flex items-center justify-between rounded-[18px] border border-white/10 bg-black/20 px-4 py-3 text-sm text-white/78">
+											<label
+												className={cn(
+													"flex items-center justify-between rounded-[18px] border px-4 py-3 text-sm",
+													isLightTheme
+														? "border-slate-300 bg-white text-slate-700"
+														: "border-white/10 bg-black/20 text-white/78",
+												)}
+											>
 												<span>Auto Download watched episodes</span>
 												<input
 													type="checkbox"
@@ -1112,7 +1500,9 @@ export function ReelShortApp() {
 													className="size-5 accent-[var(--reel-accent)]"
 												/>
 											</label>
-											<label className="grid gap-2 text-sm text-white/70">
+											<label
+												className={cn("grid gap-2 text-sm", secondaryTextClass)}
+											>
 												Concurrent downloads
 												<input
 													type="range"
@@ -1128,7 +1518,7 @@ export function ReelShortApp() {
 													}
 													className="accent-[var(--reel-accent)]"
 												/>
-												<span className="text-white/45 text-xs">
+												<span className={cn("text-xs", subtleTextClass)}>
 													{settings.concurrentDownloads} simultaneous jobs
 												</span>
 											</label>
@@ -1139,7 +1529,12 @@ export function ReelShortApp() {
 						</div>
 
 						<aside className="grid gap-4">
-							<Card className="rounded-[28px] border-0 bg-[#111216] py-0 text-white shadow-none">
+							<Card
+								className={cn(
+									"rounded-[28px] border-0 py-0 shadow-none",
+									sectionPanelClass,
+								)}
+							>
 								<CardContent className="grid gap-4 p-5">
 									<div>
 										<p className="text-[11px] text-white/35 uppercase tracking-[0.3em]">
@@ -1153,31 +1548,59 @@ export function ReelShortApp() {
 									{activePlayback && selectedMovie ? (
 										<button
 											type="button"
-											onClick={() => setIsPlayerOpen(true)}
-											className="rounded-[24px] border border-white/8 bg-[#17181e] p-4 text-left transition hover:border-white/14"
+											onClick={handleResumePlayback}
+											className={cn(
+												"rounded-[24px] border p-4 text-left transition",
+												shellPanelClass,
+												isLightTheme
+													? "hover:border-slate-300"
+													: "hover:border-white/14",
+											)}
 										>
-											<p className="text-[11px] text-white/35 uppercase tracking-[0.24em]">
+											<p
+												className={cn(
+													"text-[11px] uppercase tracking-[0.24em]",
+													subtleTextClass,
+												)}
+											>
 												Resume
 											</p>
 											<h4 className="mt-2 font-semibold text-lg text-white">
 												{activePlayback.title}
 											</h4>
-											<p className="mt-2 text-sm text-white/55">
+											<p className={cn("mt-2 text-sm", secondaryTextClass)}>
 												Resume exactly where you left off.
 											</p>
 										</button>
 									) : (
-										<div className="rounded-[24px] border border-white/10 border-dashed bg-[#17181e] p-5 text-sm text-white/50">
+										<div
+											className={cn(
+												"rounded-[24px] border border-dashed p-5 text-sm",
+												isLightTheme
+													? "border-slate-300 bg-white text-slate-500"
+													: "border-white/10 bg-[#17181e] text-white/50",
+											)}
+										>
 											Open a title to unlock the player and smart resume memory.
 										</div>
 									)}
 								</CardContent>
 							</Card>
 
-							<Card className="rounded-[28px] border-0 bg-[#111216] py-0 text-white shadow-none">
+							<Card
+								className={cn(
+									"rounded-[28px] border-0 py-0 shadow-none",
+									sectionPanelClass,
+								)}
+							>
 								<CardContent className="grid gap-4 p-5">
 									<div>
-										<p className="text-[11px] text-white/35 uppercase tracking-[0.3em]">
+										<p
+											className={cn(
+												"text-[11px] uppercase tracking-[0.3em]",
+												subtleTextClass,
+											)}
+										>
 											Queue summary
 										</p>
 										<h3 className="mt-2 font-[family-name:var(--font-reel-display)] text-3xl">
@@ -1191,7 +1614,10 @@ export function ReelShortApp() {
 											return (
 												<div
 													key={item.label}
-													className="flex items-center justify-between rounded-[20px] border border-white/8 bg-[#17181e] px-4 py-3"
+													className={cn(
+														"flex items-center justify-between rounded-[20px] border px-4 py-3",
+														shellPanelClass,
+													)}
 												>
 													<span className="flex items-center gap-3 text-sm text-white/70">
 														<Icon
@@ -1256,15 +1682,19 @@ export function ReelShortApp() {
 					movieTitle={selectedMovie.title}
 					previousEpisodeTitle={previousEpisode?.title}
 					nextEpisodeTitle={nextEpisode?.title}
-					initialPosition={activeProgress}
+					initialPosition={playerInitialPosition}
 					onClose={() => setIsPlayerOpen(false)}
 					onEnded={handlePlayerEnd}
 					onPrevious={
 						previousEpisode
-							? () => void openEpisode(previousEpisode)
+							? () => void openEpisode(previousEpisode, { resume: false })
 							: undefined
 					}
-					onNext={nextEpisode ? () => void openEpisode(nextEpisode) : undefined}
+					onNext={
+						nextEpisode
+							? () => void openEpisode(nextEpisode, { resume: false })
+							: undefined
+					}
 					onProgress={handlePlayerProgress}
 					onPlayStart={handlePlayStart}
 				/>
